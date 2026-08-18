@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$ROOT/build}"
+VERSION="${2:-1.0.0}"
 APP="$OUT/FPS Uncap.app"
 
 [ -f "$ROOT/build/fpsuncap.dylib" ] || { echo "run 'make' first"; exit 1; }
@@ -19,8 +20,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>              <string>FPS Uncap</string>
     <key>CFBundleDisplayName</key>       <string>FPS Uncap</string>
     <key>CFBundleIdentifier</key>        <string>io.github.awsame303.fpsuncap</string>
-    <key>CFBundleVersion</key>           <string>1.0.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleVersion</key>           <string>$VERSION</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleExecutable</key>        <string>FPS Uncap</string>
     <key>LSMinimumSystemVersion</key>    <string>11.0</string>

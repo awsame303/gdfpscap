@@ -1,5 +1,7 @@
 # FPS Uncap for Geometry Dash (macOS)
 
+[![CI](https://github.com/awsame303/gdfpscap/actions/workflows/ci.yml/badge.svg)](https://github.com/awsame303/gdfpscap/actions/workflows/ci.yml)
+
 Run Geometry Dash's game loop faster than your display's refresh rate on macOS.
 
 On Windows, uncapping is routine. On macOS it has been an open problem: GD's
@@ -48,7 +50,7 @@ settings, but it can only install if you grant it App Management in
 git clone https://github.com/awsame303/fpsuncap-gd
 cd fpsuncap-gd
 make            # builds a universal (arm64 + x86_64) dylib
-make test       # 9 checks, none of which touch your game
+make test       # 12 checks, none of which touch your game
 make install    # installs into Geometry Dash
 make pkg        # build the installer package (the recommended front end)
 make app        # optionally build the settings app
@@ -258,6 +260,18 @@ fpsuncap uninstall
 This restores `libfmod.dylib` byte-for-byte and removes the payload.
 
 ---
+
+## Releasing
+
+CI runs the suite on every push. Tagging cuts a release:
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+That builds the package and the app, attaches them with a `SHA256SUMS.txt`, and
+writes the install notes. The pacing checks need a real display and skip
+themselves on CI; everything else runs there.
 
 ## Credits
 

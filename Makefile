@@ -28,7 +28,7 @@ $(BUILD)/fpsuncap: tools/fpsuncap | $(BUILD)
 	@cp tools/fpsuncap $@ && chmod +x $@
 
 app: all
-	@./app/build-app.sh $(BUILD)
+	@./app/build-app.sh $(BUILD) $(VERSION)
 
 pkg: all
 	@./app/build-pkg.sh $(BUILD) $(VERSION)

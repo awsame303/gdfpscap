@@ -7,10 +7,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$ROOT/build"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 
 ok()   { printf "  \033[32mPASS\033[0m %s\n" "$1"; PASS=$((PASS+1)); }
 bad()  { printf "  \033[31mFAIL\033[0m %s\n" "$1"; FAIL=$((FAIL+1)); }
+skip() { printf "  \033[33mSKIP\033[0m %s\n" "$1"; SKIP=$((SKIP+1)); }
 
 clang -arch arm64 -O2 -Wno-deprecated-declarations \
   -framework CoreVideo -framework CoreFoundation \
@@ -25,7 +26,16 @@ near() { # actual expected tolerance
 }
 
 echo "pacing"
+# Needs a real display: the harness asks CoreVideo for a link on the active
+# displays. CI runners are headless, so measure first and skip rather than
+# report a failure that says nothing about the code.
 BASE=$(rate FPSUNCAP_X=0)
+case "${BASE:-}" in
+    ''|*[!0-9.]*) BASE="";;
+esac
+if [ -z "$BASE" ]; then
+    skip "pacing needs a display (no CVDisplayLink here)"
+else
 echo "    display refresh measured at ${BASE}/s"
 for m in source runloop thread; do
     r=$(rate FPSUNCAP_MODE=$m FPSUNCAP_FPS=240 DYLD_INSERT_LIBRARIES="$BUILD/fpsuncap.dylib")
@@ -37,6 +47,7 @@ near "$r" 500 25 && ok "scales to 500/s (got $r)" || bad "500 target got $r"
 r=$(rate FPSUNCAP_DISABLE=1 DYLD_INSERT_LIBRARIES="$BUILD/fpsuncap.dylib")
 near "$r" "$BASE" 8 && ok "disable=1 falls back to display rate (got $r)" \
                     || bad "disable=1 got $r, expected ~$BASE"
+fi
 
 echo "splicer"
 # A fixture with realistic header padding (real app libraries have plenty;
@@ -83,5 +94,9 @@ else
 fi
 
 echo
-printf "%d passed, %d failed\n" "$PASS" "$FAIL"
+if [ "$SKIP" -gt 0 ]; then
+    printf "%d passed, %d failed, %d skipped\n" "$PASS" "$FAIL" "$SKIP"
+else
+    printf "%d passed, %d failed\n" "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ]

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # macOS only: the build needs clang with the macOS SDK, and the suite uses
+    # codesign, otool, osacompile and pkgbuild.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          for f in tools/fpsuncap tools/gui.sh tools/find-gd.sh \
+                   pkg/postinstall app/build-app.sh app/build-pkg.sh tests/*.sh; do
+            bash -n "$f" || exit 1
+          done
+
+      - name: Build
+        run: make
+
+      - name: Universal binary check
+        run: |
+          for f in build/fpsuncap.dylib build/machsplice; do
+            echo "== $f"
+            lipo -archs "$f"
+            lipo -archs "$f" | grep -q arm64  || { echo "missing arm64";  exit 1; }
+            lipo -archs "$f" | grep -q x86_64 || { echo "missing x86_64"; exit 1; }
+          done
+
+      - name: Test
+        # The pacing checks need a real display and skip themselves on a
+        # headless runner; everything else runs everywhere.
+        run: make test
+
+      - name: Build installer package
+        run: make pkg
+
+      - name: Build app
+        run: make app
+
+      - name: Package sanity
+        run: |
+          pkgutil --expand "build/FPS Uncap.pkg" /tmp/expanded
+          grep -q 'auth="root"' /tmp/expanded/PackageInfo \
+            || { echo "package must install as root"; exit 1; }
+          lsbom /tmp/expanded/Bom | awk '{print $1}' | grep -q './find-gd.sh' \
+            || { echo "payload is missing find-gd.sh"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fpsuncap-build
+          path: |
+            build/FPS Uncap.pkg
+            build/FPS Uncap.app
