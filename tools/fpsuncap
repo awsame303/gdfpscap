@@ -1,0 +1,238 @@
+#!/bin/bash
+# fpsuncap -- command line interface. The GUI is a thin wrapper over this.
+set -uo pipefail
+
+VERSION="1.0.0"
+SUPPORT="$HOME/Library/Application Support/FPSUncap"
+CONFIG="$SUPPORT/config"
+LOG="$SUPPORT/fpsuncap.log"
+DYLIB_NAME="fpsuncap.dylib"
+PRISTINE_SUFFIX=".fpsuncap-original"
+
+# Payload lives in build/ when run from the repo, or Resources/ inside the app.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for d in "$SELF/../build" "$SELF" "$SELF/../Resources"; do
+    [ -f "$d/$DYLIB_NAME" ] && PAYLOAD="$(cd "$d" && pwd)" && break
+done
+
+red()  { printf "\033[31m%s\033[0m\n" "$*"; }
+grn()  { printf "\033[32m%s\033[0m\n" "$*"; }
+ylw()  { printf "\033[33m%s\033[0m\n" "$*"; }
+die()  { red "error: $*" >&2; exit 1; }
+
+# --------------------------------------------------------------- locating ---
+
+find_gd() {
+    [ -n "${FPSUNCAP_GD_PATH:-}" ] && { echo "$FPSUNCAP_GD_PATH"; return; }
+    local c
+    for c in \
+        "/Applications/Geometry Dash.app" \
+        "$HOME/Applications/Geometry Dash.app" \
+        "$HOME/Library/Application Support/Steam/steamapps/common/Geometry Dash/Geometry Dash.app" \
+        "$HOME/Documents/Geometry Dash.app"
+    do
+        [ -d "$c" ] && { echo "$c"; return; }
+    done
+    # Last resort: ask Spotlight.
+    mdfind -name "Geometry Dash.app" 2>/dev/null \
+        | grep -E "Geometry Dash\.app$" | grep -v backup | head -1
+}
+
+require_gd() {
+    APP="$(find_gd)"
+    [ -n "$APP" ] && [ -d "$APP" ] || die "could not find Geometry Dash.app -- pass --app /path/to/Geometry\\ Dash.app"
+    FW="$APP/Contents/Frameworks"
+    TARGET="$FW/libfmod.dylib"
+    [ -f "$TARGET" ] || die "no libfmod.dylib in $FW -- is this a Geometry Dash install?"
+}
+
+gd_running() { pgrep -x "Geometry Dash" >/dev/null 2>&1; }
+
+# ----------------------------------------------------------------- config ---
+
+read_conf() { # key default
+    local v=""
+    [ -f "$CONFIG" ] && v="$(grep -E "^$1=" "$CONFIG" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    echo "${v:-$2}"
+}
+
+write_conf() { # key value
+    mkdir -p "$SUPPORT"
+    touch "$CONFIG"
+    if grep -qE "^$1=" "$CONFIG" 2>/dev/null; then
+        sed -i '' "s|^$1=.*|$1=$2|" "$CONFIG"
+    else
+        echo "$1=$2" >> "$CONFIG"
+    fi
+}
+
+ensure_config() {
+    [ -f "$CONFIG" ] && return
+    mkdir -p "$SUPPORT"
+    cat > "$CONFIG" <<'CONF'
+# fpsuncap settings. Re-read every time Geometry Dash starts -- no reinstall
+# needed after changing anything here.
+
+# Frames per second for the game loop. This is the number you want to raise.
+fps=240
+
+# Real buffer swaps per second. 0 follows your display's refresh rate, which
+# is almost always what you want: a display cannot show more than that, and
+# every real swap costs a wait for the next vblank.
+present_fps=0
+
+# Pacing strategy: source (default, recommended) | runloop | thread
+mode=source
+
+# 1 restores stock behaviour without uninstalling.
+disable=0
+
+# 1 writes frame counters to fpsuncap.log.
+verbose=0
+CONF
+}
+
+# --------------------------------------------------------------- commands ---
+
+cmd_install() {
+    require_gd
+    [ -n "${PAYLOAD:-}" ] || die "payload not found -- run 'make' first"
+    gd_running && die "Geometry Dash is running -- quit it first"
+
+    local pristine="$TARGET$PRISTINE_SUFFIX"
+    # Snapshot the untouched library exactly once, and never overwrite it.
+    [ -f "$pristine" ] || cp "$TARGET" "$pristine"
+
+    cp "$PAYLOAD/$DYLIB_NAME" "$FW/$DYLIB_NAME" || die "cannot write to $FW (permission denied?)"
+
+    # Always splice a fresh copy of the pristine library so repeated installs
+    # cannot stack duplicate load commands.
+    cp "$pristine" "$TARGET"
+    "$PAYLOAD/machsplice" "$TARGET" "@rpath/$DYLIB_NAME" || die "splice failed"
+
+    codesign --remove-signature "$TARGET" 2>/dev/null
+    codesign -f -s - "$FW/$DYLIB_NAME" 2>/dev/null || die "could not sign $DYLIB_NAME"
+    codesign -f -s - "$TARGET"         2>/dev/null || die "could not sign libfmod.dylib"
+    codesign -f -s - "$APP"            2>/dev/null || die "could not sign $APP"
+
+    ensure_config
+    grn "installed into $APP"
+    echo "  loop fps    : $(read_conf fps 240)"
+    echo "  present fps : $(read_conf present_fps 0) (0 = follow display)"
+    echo
+    echo "Launch Geometry Dash normally. Change the FPS any time with:  fpsuncap set 300"
+}
+
+cmd_uninstall() {
+    require_gd
+    gd_running && die "Geometry Dash is running -- quit it first"
+    local pristine="$TARGET$PRISTINE_SUFFIX"
+
+    if [ -f "$pristine" ]; then
+        cp "$pristine" "$TARGET" && rm -f "$pristine"
+    elif [ -f "$FW/restore_fmod.dylib" ]; then
+        cp "$FW/restore_fmod.dylib" "$TARGET"      # Geode keeps its own backup
+    elif [ -n "${PAYLOAD:-}" ]; then
+        "$PAYLOAD/machsplice" --remove "$TARGET" "@rpath/$DYLIB_NAME"
+    else
+        die "no pristine copy and no splicer available"
+    fi
+
+    rm -f "$FW/$DYLIB_NAME"
+    codesign -f -s - "$TARGET" 2>/dev/null
+    codesign -f -s - "$APP"    2>/dev/null
+    grn "uninstalled -- $APP restored to stock"
+}
+
+cmd_status() {
+    echo "fpsuncap $VERSION"
+    APP="$(find_gd)"
+    if [ -z "$APP" ]; then red "Geometry Dash : not found"; else
+        echo "Geometry Dash : $APP"
+        if otool -l "$APP/Contents/Frameworks/libfmod.dylib" 2>/dev/null | grep -q "$DYLIB_NAME"; then
+            grn "installed      : yes"
+        else
+            ylw "installed      : no"
+        fi
+    fi
+    if [ -f "$CONFIG" ]; then
+        local d; d="$(read_conf disable 0)"
+        echo "loop fps      : $(read_conf fps 240)"
+        echo "present fps   : $(read_conf present_fps 0) (0 = follow display)"
+        echo "mode          : $(read_conf mode source)"
+        [ "$d" = "1" ] && ylw "enabled       : no (disable=1)" || grn "enabled       : yes"
+    else
+        ylw "config        : none yet"
+    fi
+}
+
+cmd_set() {
+    [ $# -ge 1 ] || die "usage: fpsuncap set <fps>"
+    case "$1" in ''|*[!0-9]*) die "fps must be a whole number";; esac
+    [ "$1" -ge 30 ] && [ "$1" -le 2000 ] || die "fps must be between 30 and 2000"
+    ensure_config
+    write_conf fps "$1"
+    grn "loop fps set to $1"
+    gd_running && ylw "restart Geometry Dash for it to take effect"
+    exit 0
+}
+
+cmd_on()  { ensure_config; write_conf disable 0; grn "enabled  (restart GD)"; }
+cmd_off() { ensure_config; write_conf disable 1; ylw "disabled (restart GD) -- stock vsync behaviour, still installed"; }
+
+cmd_log() { [ -f "$LOG" ] && tail -40 "$LOG" || echo "no log yet (set verbose=1 in $CONFIG)"; }
+
+cmd_doctor() {
+    echo "fpsuncap $VERSION -- diagnostics"
+    echo "payload   : ${PAYLOAD:-NOT FOUND}"
+    echo "config    : $CONFIG"
+    APP="$(find_gd)"; echo "app       : ${APP:-NOT FOUND}"
+    [ -n "$APP" ] || return 1
+    echo "arch      : $(lipo -info "$APP/Contents/MacOS/Geometry Dash" 2>/dev/null | sed 's/.*: //')"
+    echo "signature : $(codesign -dv "$APP" 2>&1 | grep -i '^Signature' | head -1)"
+    echo "load cmds : $(otool -l "$APP/Contents/Frameworks/libfmod.dylib" 2>/dev/null | grep -c "$DYLIB_NAME") reference(s) to $DYLIB_NAME"
+    gd_running && echo "running   : yes (pid $(pgrep -x 'Geometry Dash'))" || echo "running   : no"
+}
+
+usage() {
+    cat <<USAGE
+fpsuncap $VERSION -- uncap Geometry Dash's frame loop on macOS
+
+  fpsuncap install          install into Geometry Dash
+  fpsuncap uninstall        restore Geometry Dash to stock
+  fpsuncap set <fps>        set the loop rate (e.g. fpsuncap set 240)
+  fpsuncap status           show what is installed and configured
+  fpsuncap on | off         enable/disable without uninstalling
+  fpsuncap log              show recent log output
+  fpsuncap doctor           print diagnostics for bug reports
+
+Options:
+  --app <path>              path to Geometry Dash.app (otherwise auto-detected)
+USAGE
+}
+
+# ------------------------------------------------------------------- main ---
+
+ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --app) export FPSUNCAP_GD_PATH="$2"; shift 2;;
+        -h|--help) usage; exit 0;;
+        -v|--version) echo "$VERSION"; exit 0;;
+        *) ARGS+=("$1"); shift;;
+    esac
+done
+set -- ${ARGS+"${ARGS[@]}"}
+
+case "${1:-}" in
+    install)   cmd_install;;
+    uninstall) cmd_uninstall;;
+    status)    cmd_status;;
+    set)       shift; cmd_set "$@";;
+    on)        cmd_on;;
+    off)       cmd_off;;
+    log)       cmd_log;;
+    doctor)    cmd_doctor;;
+    ""|help)   usage;;
+    *)         die "unknown command: $1";;
+esac
