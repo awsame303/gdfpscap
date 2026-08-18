@@ -29,12 +29,23 @@ echo "pacing"
 # Needs a real display: the harness asks CoreVideo for a link on the active
 # displays. CI runners are headless, so measure first and skip rather than
 # report a failure that says nothing about the code.
-BASE=$(rate FPSUNCAP_X=0)
-case "${BASE:-}" in
-    ''|*[!0-9.]*) BASE="";;
-esac
+# Pacing is a real-time property: it needs a real display AND a machine that
+# can actually sustain the wakeups. A shared, virtualised CI runner is neither,
+# so skip there and validate this on real hardware.
+if [ -n "${CI:-}" ]; then
+    BASE=""
+else
+    BASE=$(rate FPSUNCAP_X=0)
+    case "${BASE:-}" in
+        ''|*[!0-9.]*) BASE="";;
+    esac
+fi
 if [ -z "$BASE" ]; then
-    skip "pacing needs a display (no CVDisplayLink here)"
+    if [ -n "${CI:-}" ]; then
+        skip "pacing not measured on CI (needs real hardware)"
+    else
+        skip "pacing needs a display (no CVDisplayLink here)"
+    fi
 else
 echo "    display refresh measured at ${BASE}/s"
 for m in source runloop thread; do
