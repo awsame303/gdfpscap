@@ -22,21 +22,10 @@ die()  { red "error: $*" >&2; exit 1; }
 
 # --------------------------------------------------------------- locating ---
 
-find_gd() {
-    [ -n "${FPSUNCAP_GD_PATH:-}" ] && { echo "$FPSUNCAP_GD_PATH"; return; }
-    local c
-    for c in \
-        "/Applications/Geometry Dash.app" \
-        "$HOME/Applications/Geometry Dash.app" \
-        "$HOME/Library/Application Support/Steam/steamapps/common/Geometry Dash/Geometry Dash.app" \
-        "$HOME/Documents/Geometry Dash.app"
-    do
-        [ -d "$c" ] && { echo "$c"; return; }
-    done
-    # Last resort: ask Spotlight.
-    mdfind -name "Geometry Dash.app" 2>/dev/null \
-        | grep -E "Geometry Dash\.app$" | grep -v backup | head -1
-}
+GD_HOME="$HOME"
+. "$SELF/find-gd.sh" 2>/dev/null \
+  || . "$SELF/../tools/find-gd.sh" 2>/dev/null \
+  || die "find-gd.sh not found next to $0"
 
 require_gd() {
     APP="$(find_gd)"
@@ -107,13 +96,18 @@ cmd_install() {
 
     # Always splice a fresh copy of the pristine library so repeated installs
     # cannot stack duplicate load commands.
-    cp "$pristine" "$TARGET"
+    cp "$pristine" "$TARGET" || die "cannot write $TARGET -- not permitted?"
     "$PAYLOAD/machsplice" "$TARGET" "@rpath/$DYLIB_NAME" || die "splice failed"
 
     codesign --remove-signature "$TARGET" 2>/dev/null
-    codesign -f -s - "$FW/$DYLIB_NAME" 2>/dev/null || die "could not sign $DYLIB_NAME"
-    codesign -f -s - "$TARGET"         2>/dev/null || die "could not sign libfmod.dylib"
-    codesign -f -s - "$APP"            2>/dev/null || die "could not sign $APP"
+    # Signing the bundle fails outright if ANY nested Mach-O is unsigned, and
+    # Geode ships its dylibs unsigned -- so sign everything in Frameworks
+    # first, not just our own two files.
+    for f in "$FW"/*.dylib; do
+        [ -f "$f" ] || continue
+        codesign -f -s - "$f" 2>/dev/null || die "could not sign $(basename "$f")"
+    done
+    codesign -f -s - "$APP" 2>/dev/null || die "could not sign $APP"
 
     ensure_config
     grn "installed into $APP"
@@ -139,8 +133,14 @@ cmd_uninstall() {
     fi
 
     rm -f "$FW/$DYLIB_NAME"
-    codesign -f -s - "$TARGET" 2>/dev/null
-    codesign -f -s - "$APP"    2>/dev/null
+    # Do not re-sign $TARGET: it is the pristine copy, and signing it again
+    # would change its bytes -- the restore is meant to be byte-for-byte.
+    for f in "$FW"/*.dylib; do
+        [ -f "$f" ] || continue
+        [ "$f" = "$TARGET" ] && continue
+        codesign -v "$f" >/dev/null 2>&1 || codesign -f -s - "$f" 2>/dev/null
+    done
+    codesign -f -s - "$APP" 2>/dev/null
     grn "uninstalled -- $APP restored to stock"
 }
 

@@ -21,14 +21,26 @@ present   75 fps      ← your display's real refresh rate
 
 ### The easy way
 
-1. Download `FPS Uncap.app` from [Releases](../../releases).
+1. Download `FPS Uncap.pkg` from [Releases](../../releases).
 2. **Right-click it → Open** (not double-click — see [Gatekeeper](#gatekeeper) below).
-3. Follow the prompts. It finds Geometry Dash, installs itself, and asks what
-   FPS you want.
+3. Follow the prompts. It finds Geometry Dash, installs the payload, and sets
+   the loop to 240 FPS.
 
 That's it. Launch Geometry Dash normally afterwards.
 
-To change the FPS later, open `FPS Uncap.app` again and pick **Change FPS**.
+To change the FPS later: `fpsuncap set 300`.
+
+> **Why a `.pkg` and not an app?** Since macOS Ventura, modifying a file that is
+> sealed into another application's code signature requires **App Management**
+> permission. A double-clicked, unsigned app is never offered that consent
+> prompt — the write just fails with `Operation not permitted`. A package's
+> `postinstall` runs as root under `installd`, which is not subject to that
+> restriction. This is the same approach Geode's macOS installer uses, and the
+> reason it works where an app does not.
+
+`FPS Uncap.app` is still built by `make app` and works fine for changing
+settings, but it can only install if you grant it App Management in
+**System Settings → Privacy & Security**.
 
 ### From source
 
@@ -38,7 +50,8 @@ cd fpsuncap-gd
 make            # builds a universal (arm64 + x86_64) dylib
 make test       # 9 checks, none of which touch your game
 make install    # installs into Geometry Dash
-make app        # optionally build the double-clickable app
+make pkg        # build the installer package (the recommended front end)
+make app        # optionally build the settings app
 ```
 
 Requires the Xcode command line tools (`xcode-select --install`). Nothing else
@@ -105,6 +118,20 @@ fpsuncap doctor           diagnostics for bug reports
 
 Pass `--app "/path/to/Geometry Dash.app"` if auto-detection can't find your
 install.
+
+### Where it looks
+
+In order, stopping at the first directory that is a real install (an executable
+*and* a `libfmod.dylib`, so a stale backup or a lookalike folder is skipped):
+
+1. Every Steam library — the default one, plus every `path` listed in
+   `steamapps/libraryfolders.vdf`, which is how Steam records libraries kept on
+   other volumes or external drives.
+2. `/Applications` and `~/Applications`.
+3. `~/Desktop`, `~/Downloads`, `~/Documents`, `~/Games`.
+4. Spotlight (`mdfind`), ignoring anything under a backup folder or the Trash.
+
+If none of that finds it, the installer asks you to pick it yourself.
 
 ---
 
@@ -185,6 +212,16 @@ isn't the frontmost app, so measure while actually playing.
 **It crashed / hung.** Set `disable=1` in the config, or run `fpsuncap off`, to
 get back to stock behaviour instantly without uninstalling. Then please open an
 issue with the output of `fpsuncap doctor`.
+
+**Nothing happens after I click Install.** macOS is blocking the installer from
+reaching Geometry Dash. This happens when GD lives in a protected folder —
+`~/Documents`, `~/Desktop`, `~/Downloads`, or an external drive — and shows up
+as `Operation not permitted` rather than a normal permission error. Open
+**System Settings → Privacy & Security → Files and Folders**, enable **FPS
+Uncap**, and try again. If **App Management** lists FPS Uncap, enable it there
+too. Running `fpsuncap install` from a terminal also works, because your
+terminal usually already holds that permission — which is exactly why this
+failure only shows up in the app.
 
 <a name="gatekeeper"></a>
 **"FPS Uncap.app is damaged" or "cannot be opened".** The app is unsigned

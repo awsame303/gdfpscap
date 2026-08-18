@@ -25,6 +25,20 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>        <string>FPS Uncap</string>
     <key>LSMinimumSystemVersion</key>    <string>11.0</string>
     <key>NSHighResolutionCapable</key>   <true/>
+    <!-- Without these, macOS denies access to a Geometry Dash living in a
+         protected folder outright, instead of prompting the user to allow it.
+         The install then fails with EPERM and there is nothing the user can
+         click to fix it. -->
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>FPS Uncap needs access to modify Geometry Dash if it is installed in your Documents folder.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>FPS Uncap needs access to modify Geometry Dash if it is installed on your Desktop.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>FPS Uncap needs access to modify Geometry Dash if it is installed in your Downloads folder.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>FPS Uncap needs access to modify Geometry Dash if it is installed on an external drive.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>FPS Uncap uses system dialogs to ask you what to do.</string>
 </dict>
 </plist>
 PLIST
@@ -36,7 +50,8 @@ LAUNCHER
 chmod +x "$APP/Contents/MacOS/FPS Uncap"
 
 cp "$ROOT/build/fpsuncap.dylib" "$ROOT/build/machsplice" \
-   "$ROOT/tools/fpsuncap" "$ROOT/tools/gui.sh" "$APP/Contents/Resources/"
+   "$ROOT/tools/fpsuncap" "$ROOT/tools/gui.sh" "$ROOT/tools/find-gd.sh" \
+   "$APP/Contents/Resources/"
 chmod +x "$APP/Contents/Resources/fpsuncap" "$APP/Contents/Resources/gui.sh" \
          "$APP/Contents/Resources/machsplice"
 

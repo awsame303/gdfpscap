@@ -1,0 +1,150 @@
+#!/bin/bash
+# Runs as root under installd, which is why this works where the .app does not:
+# modifying a file sealed into Geometry Dash's signature needs App Management
+# permission, and an unsigned double-clicked app is never granted it.
+set -uo pipefail
+
+STAGE="/tmp/fpsuncap-install"
+DYLIB="fpsuncap.dylib"
+
+# installd runs us as root; everything user-facing has to be attributed back.
+USER_NAME="$(stat -f '%Su' /dev/console)"
+USER_HOME="$(dscl . -read "/Users/$USER_NAME" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+[ -n "$USER_HOME" ] || USER_HOME="/Users/$USER_NAME"
+[ -n "${FPSUNCAP_USER_HOME:-}" ] && USER_HOME="$FPSUNCAP_USER_HOME"
+
+as_user() { launchctl asuser "$(id -u "$USER_NAME")" sudo -u "$USER_NAME" "$@"; }
+# FPSUNCAP_TEST_GUI lets the test suite answer dialogs without showing any.
+gui()     { if [ -n "${FPSUNCAP_TEST_GUI:-}" ]; then "$FPSUNCAP_TEST_GUI" "$1"; else as_user osascript -e "$1" 2>/dev/null; fi; }
+fail()    { gui "display dialog \"$1\" with title \"FPS Uncap\" buttons {\"OK\"} default button \"OK\" with icon stop"; rm -rf "$STAGE"; exit 1; }
+say()     { gui "display dialog \"$1\" with title \"FPS Uncap\" buttons {\"OK\"} default button \"OK\""; }
+
+CONF_DIR="$USER_HOME/Library/Application Support/FPSUncap"
+CONF="$CONF_DIR/config"
+
+read_fps() { [ -f "$CONF" ] && grep -E '^fps=' "$CONF" | tail -1 | cut -d= -f2 || echo 240; }
+
+write_fps() { # fps
+    mkdir -p "$CONF_DIR"
+    if [ -f "$CONF" ] && grep -qE '^fps=' "$CONF"; then
+        sed -i '' "s|^fps=.*|fps=$1|" "$CONF"
+    else
+        printf 'fps=%s\npresent_fps=0\nmode=source\ndisable=0\nverbose=0\n' "$1" > "$CONF"
+    fi
+    chown -R "$USER_NAME" "$CONF_DIR" 2>/dev/null || true
+}
+
+# Ask for a loop rate. Keeps asking until the number is sane or the user cancels.
+ask_fps() {
+    local cur r fps
+    cur="$(read_fps)"; cur="${cur:-240}"
+    while true; do
+        r="$(gui "display dialog \"How many frames per second should the game loop run at?\n\n240 is recommended. Your display still shows its own refresh rate; this raises how often the game updates.\" default answer \"$cur\" with title \"FPS Uncap\" buttons {\"Cancel\", \"Set\"} default button \"Set\"")"
+        case "$r" in *"button returned:Set"*) ;; *) return 1;; esac
+        fps="${r##*text returned:}"
+        case "$fps" in ''|*[!0-9]*) fps="";; esac
+        if [ -n "$fps" ] && [ "$fps" -ge 30 ] && [ "$fps" -le 2000 ]; then
+            write_fps "$fps"; return 0
+        fi
+        say "Please enter a whole number between 30 and 2000."
+    done
+}
+
+do_uninstall() {
+    pgrep -x "Geometry Dash" >/dev/null 2>&1 && fail "Please quit Geometry Dash and run this installer again."
+    if [ -f "$PRISTINE" ]; then
+        cp "$PRISTINE" "$TARGET" && rm -f "$PRISTINE" || fail "Could not restore libfmod.dylib."
+    elif [ -f "$FW/restore_fmod.dylib" ]; then
+        cp "$FW/restore_fmod.dylib" "$TARGET" || fail "Could not restore libfmod.dylib."
+    else
+        "$STAGE/machsplice" --remove "$TARGET" "@rpath/$DYLIB" >/dev/null \
+            || fail "No backup found and the load command could not be removed."
+    fi
+    rm -f "$FW/$DYLIB"
+    # Everything except the restored library, which must stay byte-identical to
+    # the copy we backed up -- re-signing it would change its bytes.
+    for f in "$FW"/*.dylib; do
+        [ -f "$f" ] || continue
+        [ "$f" = "$TARGET" ] && continue
+        codesign -v "$f" >/dev/null 2>&1 && continue
+        codesign -f -s - "$f" 2>/dev/null || fail "Could not sign $(basename "$f")."
+    done
+    codesign -f -s - "$APP" 2>/dev/null || fail "Could not sign Geometry Dash."
+    rm -f /usr/local/bin/fpsuncap 2>/dev/null
+    rm -rf "$STAGE"
+    say "FPS Uncap has been removed. Geometry Dash is back to stock."
+    exit 0
+}
+
+GD_HOME="$USER_HOME"
+GD_RUNAS="as_user"
+# shellcheck disable=SC1091
+. "$STAGE/find-gd.sh" || fail "Installer payload is incomplete (find-gd.sh missing)."
+
+APP="$(find_gd)"
+if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+    APP="$(gui 'POSIX path of (choose file with prompt "Please choose your Geometry Dash application:" of type {"app"})')"
+    APP="${APP%/}"
+fi
+[ -n "$APP" ] && [ -d "$APP" ] || fail "Could not find Geometry Dash."
+
+FW="$APP/Contents/Frameworks"
+TARGET="$FW/libfmod.dylib"
+PRISTINE="$TARGET.fpsuncap-original"
+[ -f "$TARGET" ] || fail "Not a valid Geometry Dash installation (libfmod.dylib missing):\n\n$APP"
+
+# Offer the same choices the app did. Uninstall has to live here too: undoing
+# the splice writes to the same sealed file, so it needs root just like install.
+INSTALLED=no
+otool -l "$TARGET" 2>/dev/null | grep -q "$DYLIB" && INSTALLED=yes
+
+if [ "$INSTALLED" = yes ]; then
+    CHOICE="$(gui 'set r to choose from list {"Change FPS", "Reinstall / repair", "Uninstall completely"} with title "FPS Uncap" with prompt "FPS Uncap is installed. What do you want to do?" default items {"Change FPS"} OK button name "Continue" cancel button name "Quit"
+if r is false then return "cancel"
+return item 1 of r')"
+else
+    CHOICE="Reinstall / repair"
+fi
+
+case "$CHOICE" in
+    cancel|"")              rm -rf "$STAGE"; exit 0;;
+    "Change FPS")           ask_fps && say "Loop rate updated. Restart Geometry Dash to apply."
+                            rm -rf "$STAGE"; exit 0;;
+    "Uninstall completely") do_uninstall;;
+esac
+
+pgrep -x "Geometry Dash" >/dev/null 2>&1 && fail "Please quit Geometry Dash and run this installer again."
+
+# Snapshot the untouched library exactly once, and never overwrite it.
+[ -f "$PRISTINE" ] || cp "$TARGET" "$PRISTINE" || fail "Could not back up libfmod.dylib."
+
+cp "$STAGE/$DYLIB" "$FW/$DYLIB"     || fail "Could not copy the payload into $FW."
+cp "$PRISTINE" "$TARGET"            || fail "Could not restore libfmod.dylib before splicing."
+"$STAGE/machsplice" "$TARGET" "@rpath/$DYLIB" >/dev/null || fail "Could not splice libfmod.dylib."
+
+# Signing the bundle fails if ANY nested Mach-O is unsigned, and Geode ships
+# its dylibs unsigned -- so sign everything here, not just our own files.
+codesign --remove-signature "$TARGET" 2>/dev/null
+for f in "$FW"/*.dylib; do
+    [ -f "$f" ] || continue
+    codesign -f -s - "$f" 2>/dev/null || fail "Could not sign $(basename "$f")."
+done
+codesign -f -s - "$APP" 2>/dev/null || fail "Could not sign Geometry Dash."
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+
+# Hand the CLI to the user and leave a default config owned by them.
+mkdir -p "$USER_HOME/Library/Application Support/FPSUncap"
+chown "$USER_NAME" "$USER_HOME/Library/Application Support/FPSUncap" 2>/dev/null || true
+if [ ! -f "$CONF" ]; then
+    printf 'fps=240\npresent_fps=0\nmode=source\ndisable=0\nverbose=0\n' > "$CONF"
+    chown "$USER_NAME" "$CONF" 2>/dev/null || true
+fi
+ask_fps || true
+if mkdir -p /usr/local/bin 2>/dev/null; then
+    cp "$STAGE/fpsuncap" /usr/local/bin/fpsuncap 2>/dev/null && chmod 755 /usr/local/bin/fpsuncap 2>/dev/null
+fi
+chown -R "$USER_NAME" "$FW" 2>/dev/null
+
+[ -n "${FPSUNCAP_KEEP_STAGE:-}" ] || rm -rf "$STAGE"
+say "FPS Uncap is installed.\n\nGeometry Dash will run its game loop at $(read_fps) FPS.\n\nLaunch Geometry Dash normally. Open this installer again to change the FPS or uninstall."
+exit 0

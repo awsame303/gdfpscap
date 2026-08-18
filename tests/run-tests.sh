@@ -61,6 +61,27 @@ SB=$(shasum "$SMALL" | cut -d' ' -f1)
 SA=$(shasum "$SMALL" | cut -d' ' -f1)
 [ "$SB" = "$SA" ] && ok "refuses to write when padding is insufficient" || bad "corrupted a file it should have refused"
 
+echo "detection"
+if out=$("$ROOT/tests/find-gd-check.sh" 2>&1); then
+    ok "finds Geometry Dash in every supported layout"
+else
+    bad "Geometry Dash detection failed"; printf '%s\n' "$out" | sed 's/^/    /'
+fi
+
+echo "installer package"
+if out=$("$ROOT/tests/pkg-check.sh" 2>&1); then
+    ok "install / change fps / uninstall round-trips cleanly"
+else
+    bad "pkg postinstall round-trip failed"; printf '%s\n' "$out" | sed 's/^/    /'
+fi
+
+echo "dialogs"
+if "$ROOT/tests/dialog-check.sh" >/dev/null 2>&1; then
+    ok "every GUI dialog is valid AppleScript"
+else
+    bad "a GUI dialog does not compile (run tests/dialog-check.sh)"
+fi
+
 echo
 printf "%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

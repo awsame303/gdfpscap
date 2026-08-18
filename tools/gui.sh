@@ -10,15 +10,33 @@ TITLE="FPS Uncap for Geometry Dash"
 
 # Attributing dialogs to System Events is what reliably brings them to the
 # front from a bundle with no real UI of its own.
-osa() { osascript -e "tell application \"System Events\" to $1" 2>/dev/null; }
+# Never write inside the bundle -- that breaks its signature seal.
+OSA_ERR=""
+OSA_TMP="${TMPDIR:-/tmp}/fpsuncap-osa.$$"
+trap 'rm -f "$OSA_TMP"' EXIT
+osa() {
+    local out rc
+    out=$(osascript -e "tell application \"System Events\" to $1" 2>"$OSA_TMP")
+    rc=$?
+    OSA_ERR="$(cat "$OSA_TMP" 2>/dev/null)"
+    printf '%s' "$out"
+    return $rc
+}
+
+# Strip the CLI's ANSI colouring; escape codes render as garbage in a dialog.
+plain() { printf '%s' "$1" | sed $'s/\033\[[0-9;]*m//g'; }
+
+# Escape for embedding in an AppleScript string literal. Only double quotes --
+# backslashes must survive, because the messages rely on \n for line breaks.
+esc() { printf '%s' "$1" | sed 's/"/\\"/g'; }
 
 say() { # message [icon]
-    osa "display dialog \"$1\" with title \"$TITLE\" buttons {\"OK\"} default button \"OK\" with icon ${2:-note}" >/dev/null
+    osa "display dialog \"$(esc "$1")\" with title \"$TITLE\" buttons {\"OK\"} default button \"OK\" with icon ${2:-note}" >/dev/null
 }
 
 ask_yes_no() { # message yes_label no_label
     local r
-    r=$(osa "display dialog \"$1\" with title \"$TITLE\" buttons {\"$3\", \"$2\"} default button \"$2\" with icon note")
+    r=$(osa "display dialog \"$(esc "$1")\" with title \"$TITLE\" buttons {\"$3\", \"$2\"} default button \"$2\" with icon note")
     [[ "$r" == *"button returned:$2"* ]]
 }
 
@@ -40,7 +58,7 @@ ask_fps() {
                 say "Game loop set to $fps FPS.\n\nIf Geometry Dash is open, quit and reopen it." note
                 return 0
             fi
-            say "Could not save the setting:\n\n$out" stop
+            say "Could not save the setting:\n\n$(plain "$out")" stop
             return 1
         fi
         say "Please enter a whole number between 30 and 2000." caution
@@ -54,8 +72,17 @@ do_install() {
         case "$out" in
             *running*)    say "Please quit Geometry Dash first, then try again." caution;;
             *"could not find"*) say "Could not find Geometry Dash.\n\nIf it is installed somewhere unusual, move it to your Applications folder and try again." stop;;
+            *"not permitted"*)
+                # macOS TCC. Writing libfmod.dylib means modifying a file
+                # sealed into Geometry Dash's signature, which needs App
+                # Management permission. An ad-hoc signed app is not offered
+                # the consent prompt, so it has to be granted by hand.
+                if ask_yes_no "macOS is blocking FPS Uncap from modifying Geometry Dash.\n\nOpen System Settings > Privacy & Security > App Management and turn on FPS Uncap, then try again.\n\nIf FPS Uncap is not listed there, drag it in with the + button, or run this in Terminal:\n\n$CLI install" "Open Settings" "Later"; then
+                    open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AppBundles" 2>/dev/null \
+                      || open "x-apple.systempreferences:com.apple.preference.security?Privacy" 2>/dev/null
+                fi;;
             *permission*|*"cannot write"*) say "No permission to modify Geometry Dash.\n\nIf it lives in /Applications, make sure your account is an administrator." stop;;
-            *)            say "Install failed:\n\n$out" stop;;
+            *)            say "Install failed:\n\n$(plain "$out")" stop;;
         esac
         return 1
     fi
@@ -91,10 +118,10 @@ main_menu() {
                     if [ $? -eq 0 ]; then say "Uninstalled. Geometry Dash is back to stock." note; exit 0
                     else case "$out" in
                         *running*) say "Please quit Geometry Dash first." caution;;
-                        *) say "Uninstall failed:\n\n$out" stop;;
+                        *) say "Uninstall failed:\n\n$(plain "$out")" stop;;
                     esac; fi
                 fi;;
-            "Show status")     say "$("$CLI" status 2>&1 | sed 's/"/\\"/g')" note;;
+            "Show status")     say "$(plain "$("$CLI" status 2>&1)")" note;;
             "Launch"*)         launch_gd; exit 0;;
         esac
     done

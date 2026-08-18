@@ -6,7 +6,7 @@ ARCHS    := -arch arm64 -arch x86_64
 CFLAGS   := -O2 -Wall -Wextra -Wno-deprecated-declarations
 FRAMEWORKS := -framework CoreVideo -framework CoreFoundation -framework OpenGL
 
-.PHONY: all app test install uninstall status clean
+.PHONY: all app pkg test install uninstall status clean
 
 all: $(BUILD)/fpsuncap.dylib $(BUILD)/machsplice $(BUILD)/fpsuncap
 
@@ -29,6 +29,9 @@ $(BUILD)/fpsuncap: tools/fpsuncap | $(BUILD)
 
 app: all
 	@./app/build-app.sh $(BUILD)
+
+pkg: all
+	@./app/build-pkg.sh $(BUILD) $(VERSION)
 
 test: all
 	@./tests/run-tests.sh
